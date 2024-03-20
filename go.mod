@@ -2,9 +2,13 @@ module randomproxy
 
 go 1.20
 
-require github.com/gogf/gf/v2 v2.5.1
+require (
+	github.com/AdguardTeam/gomitmproxy v0.2.1
+	github.com/gogf/gf/v2 v2.5.1
+)
 
 require (
+	github.com/AdguardTeam/golibs v0.4.0 // indirect
 	github.com/BurntSushi/toml v1.3.2 // indirect
 	github.com/clbanning/mxj/v2 v2.7.0 // indirect
 	github.com/fatih/color v1.15.0 // indirect
@@ -18,6 +22,7 @@ require (
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/olekukonko/tablewriter v0.0.5 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
 	go.opentelemetry.io/otel v1.16.0 // indirect
 	go.opentelemetry.io/otel/metric v1.16.0 // indirect

@@ -1,42 +1,124 @@
 package main
 
 import (
-	"encoding/base64"
-	"io"
-	"log"
-	"math/rand"
-	"net"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
-
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"github.com/gogf/gf/v2/container/garray"
 	"github.com/gogf/gf/v2/encoding/gbinary"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gcache"
 	"github.com/gogf/gf/v2/os/gctx"
 	"github.com/gogf/gf/v2/util/gconv"
-)
+	"log"
+	"math/rand"
+	"net"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 
-const (
-	proxyUser     = "username"
-	proxyPassword = "password"
+	"github.com/AdguardTeam/gomitmproxy"
+	"github.com/AdguardTeam/gomitmproxy/mitm"
 )
 
 var (
 	DNSCache = gcache.New()
 )
 
-// func RandomV6FromSub(subnet string) (net.IP, error) {
-// 	ip, subnet, err := net.ParseCIDR(network)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	// 获取子网掩码位长度
-// 	ones, bits := subnet.Mask.Size()
-// 	g.Log().Info(context.TODO(), "ones", ones, "bits", bits)
-// }
+func main() {
+	ctx := gctx.New()
+	certConfig := g.Cfg().MustGetWithEnv(ctx, "CERT").Map()
+	if len(certConfig) == 0 {
+		log.Fatal("no cert config")
+	}
+	cert := gconv.String(certConfig["cert"])
+	key := gconv.String(certConfig["key"])
+	tlsCert, err := tls.LoadX509KeyPair(cert, key)
+	if err != nil {
+		log.Fatal(err)
+	}
+	privateKey := tlsCert.PrivateKey.(*rsa.PrivateKey)
+
+	x509c, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	mitmConfig, err := mitm.NewConfig(x509c, privateKey, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	mitmConfig.SetValidity(time.Hour * 24 * 7) // generate certs valid for 7 days
+	mitmConfig.SetOrganization("gomitmproxy")  // cert organization
+	port := g.Cfg().MustGetWithEnv(ctx, "PORT").Int()
+	proxy := gomitmproxy.NewProxy(gomitmproxy.Config{
+		OnConnect: func(session *gomitmproxy.Session, proto string, addr string) (conn net.Conn) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				g.Log().Error(ctx, err.Error())
+				return nil
+			}
+			_, isipv6, err := getIPAddress(ctx, host)
+			if err != nil {
+				g.Log().Error(ctx, err.Error())
+				return
+			}
+			var IPS []interface{}
+			if isipv6 {
+				// g.Log().Debug(ctx, "serverIP", serverIP)
+				IPS = g.Cfg().MustGet(ctx, "IP6S").Slice()
+			} else {
+				// g.Log().Debug(ctx, "serverIP", serverIP)
+				IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
+			}
+			if len(IPS) == 0 {
+				IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
+			}
+
+			IPA := garray.NewArrayFrom(IPS)
+			IP, found := IPA.Rand()
+			if !found {
+				g.Log().Error(ctx, "no ip found")
+				return
+			}
+			ip := gconv.String(IP)
+			ipv6sub := g.Cfg().MustGet(ctx, "IP6SUB").String()
+			if isipv6 && ipv6sub != "" {
+				tempIP, _ := randomIPV6FromSubnet(ipv6sub)
+				ip = tempIP.String()
+			}
+			dialer := &net.Dialer{
+				LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 0},
+			}
+			conn, err = dialer.Dial("tcp", addr)
+			if err != nil {
+				g.Log().Error(ctx, err.Error())
+				return nil
+			}
+			return conn
+
+		},
+		ListenAddr: &net.TCPAddr{
+			IP:   net.IPv4(0, 0, 0, 0),
+			Port: port,
+		},
+		MITMConfig: mitmConfig,
+	})
+	err = proxy.Start()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	signalChannel := make(chan os.Signal, 1)
+	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
+	<-signalChannel
+
+	// Clean up
+	proxy.Close()
+}
 
 func randomIPV6FromSubnet(network string) (net.IP, error) {
 	_, subnet, err := net.ParseCIDR(network)
@@ -69,138 +151,6 @@ func randomIPV6FromSubnet(network string) (net.IP, error) {
 	return ipnew, nil
 }
 
-func handleTunneling(ctx g.Ctx, w http.ResponseWriter, r *http.Request) {
-	// 获取 Proxy-Authorization 头部
-	auth := r.Header.Get("Proxy-Authorization")
-	if auth == "" {
-		// 如果没有 Proxy-Authorization 头部，返回 407 状态码
-		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy"`)
-		http.Error(w, "authorization required", http.StatusProxyAuthRequired)
-		return
-	}
-
-	// 验证 Proxy-Authorization 头部
-	const prefix = "Basic "
-	if !strings.HasPrefix(auth, prefix) || !checkAuth(ctx, auth[len(prefix):]) {
-		http.Error(w, "authorization failed", http.StatusForbidden)
-		return
-	}
-	var IPS []interface{}
-	// 获取域名不带端口
-	host, _, err := net.SplitHostPort(r.Host)
-	if err != nil {
-		g.Log().Error(ctx, err.Error())
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	// g.Log().Debug(ctx, "host", host)
-	// 根据r.Host获取IP
-
-	_, isipv6, err := getIPAddress(ctx, host)
-	if err != nil {
-		g.Log().Error(ctx, err.Error())
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	if isipv6 {
-		// g.Log().Debug(ctx, "serverIP", serverIP)
-		IPS = g.Cfg().MustGet(ctx, "IP6S").Slice()
-	} else {
-		// g.Log().Debug(ctx, "serverIP", serverIP)
-		IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
-	}
-	if len(IPS) == 0 {
-		IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
-	}
-
-	IPA := garray.NewArrayFrom(IPS)
-	IP, found := IPA.Rand()
-	if !found {
-		g.Log().Error(ctx, "no ip found")
-		http.Error(w, "no ip found", http.StatusServiceUnavailable)
-		return
-	}
-	ip := gconv.String(IP)
-	ipv6sub := g.Cfg().MustGet(ctx, "IP6SUB").String()
-	if isipv6 && ipv6sub != "" {
-		tempIP, _ := randomIPV6FromSubnet(ipv6sub)
-		ip = tempIP.String()
-	}
-
-	// g.Log().Debug(ctx, "ip", ip)
-	dialer := &net.Dialer{
-		LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 0},
-	}
-	// 创建一个 WaitGroup 对象
-	var wg sync.WaitGroup
-
-	// 创建代理服务器连接
-	destConn, err := dialer.Dial("tcp", r.Host)
-	if err != nil {
-		g.Log().Error(ctx, err.Error())
-
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-	clientConn, _, err := hijacker.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-	}
-	// 启动两个 goroutine 进行数据传输
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		transfer(destConn, clientConn)
-	}()
-	go func() {
-		defer wg.Done()
-		transfer(clientConn, destConn)
-	}()
-	g.Log().Debug(ctx, r.Host, clientConn.RemoteAddr().String(), destConn.RemoteAddr().String(), destConn.LocalAddr().String())
-
-	// 等待所有 goroutine 完成
-	wg.Wait()
-	// g.Log().Debug(ctx, "will close", r.Host, clientConn.RemoteAddr().String(), destConn.RemoteAddr().String(), destConn.LocalAddr().String())
-	// 关闭连接
-	clientConn.Close()
-	destConn.Close()
-	// g.Log().Debug(ctx, "close", r.Host, clientConn.RemoteAddr().String(), destConn.RemoteAddr().String(), destConn.LocalAddr().String())
-
-}
-
-func transfer(destination io.WriteCloser, source io.ReadCloser) {
-	defer destination.Close()
-	defer source.Close()
-	io.Copy(destination, source)
-}
-
-func handleHTTP(ctx g.Ctx, w http.ResponseWriter, req *http.Request) {
-	resp, err := http.DefaultTransport.RoundTrip(req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	defer resp.Body.Close()
-
-	copyHeader(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-}
-
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
-}
 func getIPAddress(ctx g.Ctx, domain string) (ip string, ipv6 bool, err error) {
 	var ipAddresses []string
 	// 先从缓存中获取
@@ -220,44 +170,4 @@ func getIPAddress(ctx g.Ctx, domain string) (ip string, ipv6 bool, err error) {
 		}
 	}
 	return ipAddresses[0], false, nil
-}
-func main() {
-	ctx := gctx.New()
-	Addr := ":31280"
-	port := g.Cfg().MustGetWithEnv(ctx, "PORT").String()
-	if port != "" {
-		Addr = ":" + port
-	}
-
-	server := &http.Server{
-		Addr: Addr,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// g.DumpWithType(r.Header)
-			if r.Method == http.MethodConnect {
-				// g.Log().Debug(ctx, "handleTunneling", r.Host)
-
-				handleTunneling(ctx, w, r)
-			} else {
-				// g.Log().Debug(ctx, "handleHTTP", r.Host)
-				handleHTTP(ctx, w, r)
-			}
-		}),
-	}
-
-	log.Printf("Starting http/https proxy server on %s", server.Addr)
-	log.Fatal(server.ListenAndServe())
-}
-func checkAuth(ctx g.Ctx, auth string) bool {
-	c, err := base64.StdEncoding.DecodeString(auth)
-	if err != nil {
-		return false
-	}
-
-	parts := strings.SplitN(string(c), ":", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	g.Log().Debug(ctx, parts[0], parts[1])
-
-	return true
 }
