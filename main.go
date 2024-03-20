@@ -91,12 +91,15 @@ func main() {
 				ip = tempIP.String()
 			}
 			g.Log().Debug(ctx, "ip", ip, "isipv6", isipv6, "ipv6sub", ipv6sub)
-			dialer := &net.Dialer{
-				LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)},
-			}
-			conn, err = dialer.Dial("tcp", addr)
+			dialerCtx := (&net.Dialer{
+				LocalAddr: &net.TCPAddr{
+					IP: net.ParseIP(ip),
+				},
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext
+			conn, err = dialerCtx(session.Request().Context(), proto, addr)
 			if err != nil {
-				g.Log().Error(ctx, err.Error())
 				return nil
 			}
 			return conn
