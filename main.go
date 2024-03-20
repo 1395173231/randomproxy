@@ -100,6 +100,7 @@ func main() {
 			}).DialContext
 			conn, err = dialerCtx(session.Request().Context(), proto, addr)
 			if err != nil {
+				g.Log().Debug(ctx, err.Error())
 				return nil
 			}
 			return conn
