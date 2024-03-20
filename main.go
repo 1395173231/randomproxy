@@ -90,8 +90,9 @@ func main() {
 				tempIP, _ := randomIPV6FromSubnet(ipv6sub)
 				ip = tempIP.String()
 			}
+			g.Log().Debug(ctx, "ip", ip, "isipv6", isipv6, "ipv6sub", ipv6sub)
 			dialer := &net.Dialer{
-				LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 0},
+				LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)},
 			}
 			conn, err = dialer.Dial("tcp", addr)
 			if err != nil {
@@ -99,7 +100,6 @@ func main() {
 				return nil
 			}
 			return conn
-
 		},
 		ListenAddr: &net.TCPAddr{
 			IP:   net.IPv4(0, 0, 0, 0),
