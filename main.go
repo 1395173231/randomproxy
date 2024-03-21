@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -55,49 +56,49 @@ func main() {
 	mitmConfig.SetOrganization("gomitmproxy")  // cert organization
 	port := g.Cfg().MustGetWithEnv(ctx, "PORT").Int()
 	proxy := gomitmproxy.NewProxy(gomitmproxy.Config{
-		//DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-		//	host, _, err := net.SplitHostPort(addr)
-		//	if err != nil {
-		//		g.Log().Error(ctx, err.Error())
-		//		return nil, err
-		//	}
-		//	_, isipv6, err := getIPAddress(ctx, host)
-		//	if err != nil {
-		//		g.Log().Error(ctx, err.Error())
-		//		return nil, err
-		//	}
-		//	var IPS []interface{}
-		//	if isipv6 {
-		//		// g.Log().Debug(ctx, "serverIP", serverIP)
-		//		IPS = g.Cfg().MustGet(ctx, "IP6S").Slice()
-		//	} else {
-		//		// g.Log().Debug(ctx, "serverIP", serverIP)
-		//		IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
-		//	}
-		//	if len(IPS) == 0 {
-		//		IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
-		//	}
-		//
-		//	IPA := garray.NewArrayFrom(IPS)
-		//	IP, found := IPA.Rand()
-		//	if !found {
-		//		g.Log().Error(ctx, "no ip found")
-		//		return nil, err
-		//	}
-		//	ip := gconv.String(IP)
-		//	ipv6sub := g.Cfg().MustGet(ctx, "IP6SUB").String()
-		//	if isipv6 && ipv6sub != "" {
-		//		tempIP, _ := randomIPV6FromSubnet(ipv6sub)
-		//		ip = tempIP.String()
-		//	}
-		//	g.Log().Debug(ctx, "ip", ip, "isipv6", isipv6, "ipv6sub", ipv6sub)
-		//	dialer := &net.Dialer{
-		//		LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)},
-		//		Timeout:   10 * time.Second,
-		//		KeepAlive: 30 * time.Second,
-		//	}
-		//	return dialer.DialContext(ctx, network, addr)
-		//},
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				g.Log().Error(ctx, err.Error())
+				return nil, err
+			}
+			_, isipv6, err := getIPAddress(ctx, host)
+			if err != nil {
+				g.Log().Error(ctx, err.Error())
+				return nil, err
+			}
+			var IPS []interface{}
+			if isipv6 {
+				// g.Log().Debug(ctx, "serverIP", serverIP)
+				IPS = g.Cfg().MustGet(ctx, "IP6S").Slice()
+			} else {
+				// g.Log().Debug(ctx, "serverIP", serverIP)
+				IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
+			}
+			if len(IPS) == 0 {
+				IPS = g.Cfg().MustGet(ctx, "IPS").Slice()
+			}
+
+			IPA := garray.NewArrayFrom(IPS)
+			IP, found := IPA.Rand()
+			if !found {
+				g.Log().Error(ctx, "no ip found")
+				return nil, err
+			}
+			ip := gconv.String(IP)
+			ipv6sub := g.Cfg().MustGet(ctx, "IP6SUB").String()
+			if isipv6 && ipv6sub != "" {
+				tempIP, _ := randomIPV6FromSubnet(ipv6sub)
+				ip = tempIP.String()
+			}
+			g.Log().Debug(ctx, "ip", ip, "isipv6", isipv6, "ipv6sub", ipv6sub)
+			dialer := &net.Dialer{
+				LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)},
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
 		OnConnect: func(session *gomitmproxy.Session, proto string, addr string) (conn net.Conn) {
 			host, _, err := net.SplitHostPort(addr)
 			if err != nil {
